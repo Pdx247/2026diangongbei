@@ -64,6 +64,11 @@ def to_number(value: object) -> float:
     return float(match.group()) if match else math.nan
 
 
+def round_half_up(value: float) -> int:
+    """Round nonnegative service counts by the conventional half-up rule."""
+    return int(math.floor(float(value) + 0.5))
+
+
 def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.DataFrame, dict[str, float]]:
     population = pd.read_excel(ATTACHMENT_1, sheet_name="人口与老人结构", header=1)
     population = clean_columns(population).dropna(subset=[COMMUNITY_COL])
@@ -209,7 +214,7 @@ def build_demand_tables(
                         "第5年人数": count,
                         "服务项目": service,
                         "理论人均月需求": q0,
-                        "理论月需求总次数": int(round(count * q0)),
+                        "理论月需求总次数": round_half_up(count * q0),
                     }
                 )
                 constrained_records.append(
@@ -219,7 +224,7 @@ def build_demand_tables(
                         "第5年人数": count,
                         "服务项目": service,
                         "消费约束后人均月需求": q_adj,
-                        "消费约束后月需求总次数": int(round(count * q_adj)),
+                        "消费约束后月需求总次数": round_half_up(count * q_adj),
                     }
                 )
 
@@ -570,6 +575,7 @@ def export_tables(
 
 def build_paper(
     forecast: pd.DataFrame,
+    transition_probs: dict[str, float],
     theoretical_by_community: pd.DataFrame,
     theoretical_by_type: pd.DataFrame,
     theoretical_pivot_detail: pd.DataFrame,
@@ -597,6 +603,8 @@ def build_paper(
     end_self = int(end_row["自理"])
     end_half = int(end_row["半失能"])
     end_disabled = int(end_row["失能"])
+    rho_ah = transition_probs["自理 → 半失能"]
+    rho_hd = transition_probs["半失能 → 失能"]
 
     paper = rf"""# 第一问：未来五年老人数量与服务需求量预测
 
@@ -629,7 +637,16 @@ T=\\{{a,h,d\\}},
 S=\\{{\\text{{助餐}},\\text{{日间照料}},\\text{{上门护理}},\\text{{康复理疗}},\\text{{助浴}},\\text{{紧急救助}}\\}}.
 \]
 
-基准参数取值为：自然死亡率 \(\mu=5\\%\)，新增老人比例 \(\eta=7\\%\)，自理转半失能概率 \(\rho_{{ah}}=0.045\)，半失能转失能概率 \(\rho_{{hd}}=0.10\)。
+基准参数取值及来源如下。
+
+| 参数 | 取值 | 来源与说明 |
+|---|---:|---|
+| \(\mu\) | \(5\%\) | 题面问题1.1给定的老年人年均自然死亡率 |
+| \(\eta\) | \(7\%\) | 题面问题1.1给定的年均新增老年人占当前总老年人口比例 |
+| \(\rho_{{ah}}\) | {rho_ah:.3f} | 附件1“转移概率”表中“自理 → 半失能”的年度转移概率 |
+| \(\rho_{{hd}}\) | {rho_hd:.3f} | 附件1“转移概率”表中“半失能 → 失能”的年度转移概率 |
+
+附件1的“转移概率”表只给出上述两类状态转移的统一参考值，并未按10个小区分别列出转移概率。因此本文没有对小区转移概率取平均，而是将 \(\rho_{{ah}}={rho_ah:.3f}\)、\(\rho_{{hd}}={rho_hd:.3f}\) 作为全区域统一年度转移概率，对所有小区使用同一组参数。
 
 ## 2 问题1.1：老人数量递推预测模型
 
@@ -639,7 +656,8 @@ S=\\{{\\text{{助餐}},\\text{{日间照料}},\\text{{上门护理}},\\text{{康
 2. 自理老人可能转为半失能，半失能老人可能转为失能，失能老人不恢复；
 3. 自然死亡率对三类老人均适用；
 4. 五年内人口结构、收入水平、服务需求频次等参数保持稳定；
-5. 每年末人数采用最大余数法整数化，以保持各类型人数之和与总人数一致。
+5. 每个小区每年先由递推式得到实数型预测值，再采用最大余数法整数化，并将整数化结果作为下一年递推输入。
+6. 对存量老人，在一个年度步长内将自然死亡与健康状态转移视为独立事件；公式中 \((1-\mu)\rho\) 表示“存活且发生状态转移”的比例。新增刚满60岁老人视为年末加入，并默认进入自理状态。
 
 ### 2.2 递推模型
 
@@ -667,6 +685,15 @@ N_{{i,y}}=N_{{i,y}}^a+N_{{i,y}}^h+N_{{i,y}}^d.
 \\end{{aligned}}
 \]
 
+其中 \(\widetilde N_{{i,y+1}}^t\) 是整数化前的实数型预测值。记最大余数整数化算子为 \(\mathcal{{R}}(\cdot)\)，则实际进入下一年度递推的人数为
+\[
+\\boldsymbol{{N}}_{{i,y+1}}=\\mathcal{{R}}\\left(\\widetilde{{\\boldsymbol{{N}}}}_{{i,y+1}}\\right),
+\qquad
+\sum_{{t\in T}}N_{{i,y+1}}^t
+=\operatorname{{round}}\left(\sum_{{t\in T}}\widetilde N_{{i,y+1}}^t\right).
+\]
+最大余数法的具体做法是：先对各类型预测值取下整数，再按照小数部分从大到小依次补足人数，使三类人数总和等于四舍五入后的总人数。这样既保证人数为整数，又尽量减少由取整带来的结构偏差。
+
 写成矩阵形式：
 \[
 \\boldsymbol{{N}}_{{i,y+1}}
@@ -686,12 +713,12 @@ N_{{i,y}}=N_{{i,y}}^a+N_{{i,y}}^h+N_{{i,y}}^d.
 \\end{{bmatrix}}.
 \]
 
-注意，健康状态转移只改变老人类型，不改变老人总量。因此对三类老人求和可得
+注意，健康状态转移只改变老人类型，不改变老人总量。因此在整数化前，对三类老人求和可得
 \[
 N_{{i,y+1}}\approx(1-\mu)N_{{i,y}}+\eta N_{{i,y}}
 =(1+\eta-\mu)N_{{i,y}}=1.02N_{{i,y}}.
 \]
-也就是说，在本题基准参数下老人总数是年增长率约 \(2\%\) 的几何增长；由于预测期只有5年且增长率较小，折线图在视觉上会接近线性，但数学上并非线性递推。
+也就是说，在本题基准参数下老人总数近似为年增长率 \(2\%\) 的几何增长；最终表中总人数还会受到逐小区、逐年度整数化的轻微影响。
 
 ### 2.3 预测结果
 
@@ -715,9 +742,13 @@ N_{{i,y+1}}\approx(1-\mu)N_{{i,y}}+\eta N_{{i,y}}
 \[
 Q_{{i,s,t,5}}^0=N_{{i,5}}^t q_{{s,t}}^0.
 \]
+由于附件2中存在紧急救助 \(0.15\) 次/月这类小数频次，\(Q_{{i,s,t,5}}^0\) 可能不是整数。按照题目“尽量取整”的要求，本文对每个“小区-老人类型-服务项目”的月需求总次数采用四舍五入取整：
+\[
+\widehat Q_{{i,s,t,5}}^0=\operatorname{{round}}\left(N_{{i,5}}^tq_{{s,t}}^0\right).
+\]
 小区 \(i\) 对服务 \(s\) 的理论月需求总量为
 \[
-Q_{{i,s,5}}^0=\sum_{{t\in T}}Q_{{i,s,t,5}}^0.
+\widehat Q_{{i,s,5}}^0=\sum_{{t\in T}}\widehat Q_{{i,s,t,5}}^0.
 \]
 
 ### 3.2 计算结果
@@ -746,7 +777,7 @@ E_{{i,t}}^0=\sum_{{s\in S}}p_s^0q_{{s,t}}^0,
 \[
 L_{{i,t}}=\alpha_tM_i.
 \]
-若 \(E_{{i,t}}^0>L_{{i,t}}\)，则按附件说明对各服务次数等比例削减。定义削减系数
+若 \(E_{{i,t}}^0>L_{{i,t}}\)，则按附件2“月服务消费上限”的说明，对各服务次数等比例削减。定义削减系数
 \[
 \lambda_{{i,t}}=\min\\left\\{{1,\\frac{{L_{{i,t}}}}{{E_{{i,t}}^0}}\\right\\}}.
 \]
@@ -759,7 +790,7 @@ L_{{i,t}}=\alpha_tM_i.
 Q_{{i,s,t,5}}=N_{{i,5}}^t\\bar q_{{i,s,t}}.
 \]
 
-由于原始需求表中紧急救助为 0.15 次/月等小数频次，本文在人均需求表中保留两位小数；在小区月需求总次数表中进行四舍五入取整。
+等比例削减一方面是附件2明确给出的处理规则，另一方面也是在缺乏服务优先级、刚性需求排序等额外数据时的保守估计。该处理会忽略助餐等基础服务与康复理疗、助浴等改善型服务之间的刚性差异，这是本模型在消费约束刻画上的局限。由于原始需求表中紧急救助为 0.15 次/月等小数频次，本文在人均需求表中保留两位小数；在小区月需求总次数表中进行四舍五入取整。
 
 ### 4.2 消费约束强度
 
@@ -791,9 +822,9 @@ Q_{{i,s,t,5}}=N_{{i,5}}^t\\bar q_{{i,s,t}}.
 
 1. 读取附件1中的小区老人初始结构、收入和状态转移概率；
 2. 对每个小区建立三状态向量 \(\\boldsymbol{{N}}_{{i,y}}\)；
-3. 按年度状态递推式计算 \(y=1,\dots,5\) 的老人数量，并用最大余数法整数化；
-4. 读取附件2中的服务需求矩阵，计算第5年末理论需求 \(Q_{{i,s,t,5}}^0\)；
-5. 根据收入和消费上限计算削减系数 \(\lambda_{{i,t}}\)，得到消费约束后的需求；
+3. 按年度状态递推式计算 \(y=1,\dots,5\) 的实数型预测值，并对每个小区每年使用最大余数法整数化，整数化结果进入下一年递推；
+4. 读取附件2中的服务需求矩阵，计算第5年末理论需求 \(Q_{{i,s,t,5}}^0\)，并对月需求总次数四舍五入取整；
+5. 根据收入和消费上限计算削减系数 \(\lambda_{{i,t}}\)，按附件要求等比例压缩各项服务需求，得到消费约束后的需求；
 6. 导出结果表和学术图。
 
 若小区数为 \(|I|\)，老人类型数为 \(|T|\)，服务项目数为 \(|S|\)，预测年数为 \(Y\)，则人口递推复杂度为
@@ -843,6 +874,7 @@ def main() -> None:
     plot_outputs(forecast, theoretical_by_type, constrained_by_type, scaling)
     paper = build_paper(
         forecast,
+        transition_probs,
         theoretical_by_community,
         theoretical_by_type,
         theoretical_pivot_detail,
