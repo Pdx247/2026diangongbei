@@ -6,9 +6,13 @@ from __future__ import annotations
 import math
 import os
 import re
+import zipfile
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib-codex-cache")
+MPL_CACHE_BOOTSTRAP = Path.cwd() / "问题1" / ".matplotlib-cache"
+MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
 
 import matplotlib
 
@@ -58,9 +62,7 @@ def to_number(value: object) -> float:
     if isinstance(value, (int, float, np.integer, np.floating)):
         return float(value)
     text = str(value).strip()
-    if text.startswith("0"):
-        return 0.0
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    match = re.search(r"-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?", text)
     return float(match.group()) if match else math.nan
 
 
@@ -69,12 +71,85 @@ def round_half_up(value: float) -> int:
     return int(math.floor(float(value) + 0.5))
 
 
+def xlsx_sheets(path: Path) -> dict[str, list[list[str]]]:
+    """Read small xlsx sheets using only the standard library."""
+    ns = {
+        "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+
+    def col_index(cell_ref: str) -> int:
+        match = re.match(r"([A-Z]+)", cell_ref)
+        if not match:
+            return 1
+        col = 0
+        for ch in match.group(1):
+            col = col * 26 + ord(ch) - 64
+        return col
+
+    with zipfile.ZipFile(path) as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("m:si", ns):
+                shared_strings.append("".join(t.text or "" for t in si.findall(".//m:t", ns)))
+
+        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        rid_to_target = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        result: dict[str, list[list[str]]] = {}
+
+        for sheet in workbook.findall("m:sheets/m:sheet", ns):
+            name = sheet.attrib["name"]
+            rid = sheet.attrib[f"{{{ns['r']}}}id"]
+            target = rid_to_target[rid]
+            sheet_path = target[1:] if target.startswith("/") else f"xl/{target}"
+            sheet_root = ET.fromstring(zf.read(sheet_path))
+            rows: list[list[str]] = []
+            for row in sheet_root.findall("m:sheetData/m:row", ns):
+                values: dict[int, str] = {}
+                for cell in row.findall("m:c", ns):
+                    col = col_index(cell.attrib.get("r", "A1"))
+                    cell_type = cell.attrib.get("t")
+                    value = ""
+                    v = cell.find("m:v", ns)
+                    if v is not None:
+                        value = v.text or ""
+                        if cell_type == "s":
+                            value = shared_strings[int(value)]
+                    inline = cell.find("m:is", ns)
+                    if inline is not None:
+                        value = "".join(t.text or "" for t in inline.findall(".//m:t", ns))
+                    values[col] = value.strip()
+                if values:
+                    width = max(values)
+                    rows.append([values.get(i, "") for i in range(1, width + 1)])
+            result[name] = rows
+        return result
+
+
+def rows_to_dicts(rows: list[list[str]], header_row: int = 1) -> list[dict[str, str]]:
+    header = [cell.strip() for cell in rows[header_row]]
+    records = []
+    for row in rows[header_row + 1 :]:
+        if not any(str(cell).strip() for cell in row):
+            continue
+        padded = row + [""] * (len(header) - len(row))
+        records.append({header[i]: padded[i].strip() for i in range(len(header))})
+    return records
+
+
 def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.DataFrame, dict[str, float]]:
-    population = pd.read_excel(ATTACHMENT_1, sheet_name="人口与老人结构", header=1)
+    sheets1 = xlsx_sheets(ATTACHMENT_1)
+    sheets2 = xlsx_sheets(ATTACHMENT_2)
+
+    population = pd.DataFrame(rows_to_dicts(sheets1["人口与老人结构"], header_row=1))
     population = clean_columns(population).dropna(subset=[COMMUNITY_COL])
     population[COMMUNITY_COL] = population[COMMUNITY_COL].astype(str).str.strip()
+    for col in ["总人口", "60+老人数", "自理老人", "半失能老人", "失能老人", "人均月收入(元)"]:
+        population[col] = population[col].map(to_number)
 
-    transitions = pd.read_excel(ATTACHMENT_1, sheet_name="转移概率", header=1)
+    transitions = pd.DataFrame(rows_to_dicts(sheets1["转移概率"], header_row=1))
     transitions = clean_columns(transitions).dropna(how="all")
     transitions["转移类型"] = transitions["转移类型"].astype(str).str.strip()
     transition_probs = {}
@@ -83,7 +158,7 @@ def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.Data
         prob = to_number(row["年度转移概率参考区间"])
         transition_probs[key] = prob
 
-    demand = pd.read_excel(ATTACHMENT_2, sheet_name="每位老人月均服务需求次数", header=1)
+    demand = pd.DataFrame(rows_to_dicts(sheets2["每位老人月均服务需求次数"], header_row=1))
     demand = clean_columns(demand).dropna(subset=["服务项目"])
     demand["服务项目"] = demand["服务项目"].astype(str).str.strip()
     demand = demand.rename(columns={"自理": "自理", "半自理": "半失能", "失能": "失能"})
@@ -91,7 +166,7 @@ def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.Data
         demand[col] = demand[col].map(to_number)
     demand = demand.set_index("服务项目").loc[SERVICE_ORDER].reset_index()
 
-    revenue = pd.read_excel(ATTACHMENT_2, sheet_name="服务营收及支出", header=1)
+    revenue = pd.DataFrame(rows_to_dicts(sheets2["服务营收及支出"], header_row=1))
     revenue = clean_columns(revenue).dropna(subset=["服务项目"])
     revenue["服务项目"] = revenue["服务项目"].astype(str).str.strip()
     revenue["基准价格"] = revenue["单次服务营收（元）"].map(to_number)

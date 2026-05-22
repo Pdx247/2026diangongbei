@@ -59,6 +59,8 @@ SERVICE_ORDER = q2.SERVICE_ORDER
 PAID_SERVICES = [s for s in SERVICE_ORDER if s != "紧急救助"]
 DAYS_PER_MONTH = 30.0
 PRICE_GRID = [round(0.30 + 0.001 * i, 3) for i in range(901)]
+COORDINATE_STEPS = [0.01, 0.002, 0.001]
+TARGET_PROFIT_RATE = 0.04
 DAILY_SUBSIDY_CAP = {"小型": 1000.0, "中型": 1800.0, "大型": 2600.0}
 
 
@@ -338,42 +340,102 @@ def evaluate_station_prices(
     )
 
 
-def optimize_station(station: str, info: dict[str, Any], data: dict[str, Any]) -> StationPricingResult:
+def optimization_key(result: StationPricingResult) -> tuple[float, float, float, float, float]:
+    """Lexicographic objective for feasible pricing plans."""
+    return (
+        result.weighted_satisfaction,
+        result.weighted_price_score,
+        -abs(result.profit_rate - TARGET_PROFIT_RATE),
+        -result.weighted_price_multiplier,
+        -result.net_profit,
+    )
+
+
+def multiplier_grid(step: float) -> list[float]:
+    count = int(round((1.20 - 0.30) / step))
+    return [round(0.30 + step * i, 3) for i in range(count + 1)]
+
+
+def evaluate_multipliers(
+    station: str,
+    info: dict[str, Any],
+    data: dict[str, Any],
+    multipliers: dict[str, float],
+) -> StationPricingResult | None:
     base_price = data["price"]
+    price_vector = {service: base_price[service] * multipliers[service] for service in PAID_SERVICES}
+    return evaluate_station_prices(
+        station=station,
+        scale=info["scale"],
+        covered=info["covered"],
+        capacity=info["capacity"],
+        distance_score=info["distance_score"],
+        price_vector=price_vector,
+        data=data,
+    )
+
+
+def optimize_uniform_seed(station: str, info: dict[str, Any], data: dict[str, Any]) -> tuple[StationPricingResult, int, int]:
     best: StationPricingResult | None = None
+    best_key: tuple[float, float, float, float, float] | None = None
     checked = 0
     feasible = 0
     for multiplier in PRICE_GRID:
         checked += 1
-        price_vector = {service: base_price[service] * multiplier for service in PAID_SERVICES}
-        result = evaluate_station_prices(
-            station=station,
-            scale=info["scale"],
-            covered=info["covered"],
-            capacity=info["capacity"],
-            distance_score=info["distance_score"],
-            price_vector=price_vector,
-            data=data,
-        )
+        multipliers = {service: multiplier for service in PAID_SERVICES}
+        result = evaluate_multipliers(station, info, data, multipliers)
         if result is None:
             continue
         feasible += 1
-        key = (
-            result.weighted_satisfaction,
-            result.weighted_price_score,
-            -abs(result.profit_rate - 0.04),
-            -result.weighted_price_multiplier,
-            -result.net_profit,
-        )
-        if best is None:
-            best = result
-            best_key = key
-        elif key > best_key:
+        key = optimization_key(result)
+        if best is None or best_key is None or key > best_key:
             best = result
             best_key = key
     if best is None:
         raise RuntimeError(f"No feasible pricing found for station {station}")
-    print(f"{station}: checked={checked}, feasible={feasible}, best_PR={best.profit_rate:.4%}")
+    return best, checked, feasible
+
+
+def optimize_station(station: str, info: dict[str, Any], data: dict[str, Any]) -> StationPricingResult:
+    base_price = data["price"]
+    best, checked, feasible = optimize_uniform_seed(station, info, data)
+    best_key = optimization_key(best)
+    current_multipliers = {service: best.prices[service] / base_price[service] for service in PAID_SERVICES}
+
+    for step in COORDINATE_STEPS:
+        values = multiplier_grid(step)
+        improved = True
+        passes = 0
+        while improved and passes < 4:
+            improved = False
+            passes += 1
+            for service in PAID_SERVICES:
+                local_best = best
+                local_key = best_key
+                local_multiplier = current_multipliers[service]
+                for value in values:
+                    trial_multipliers = dict(current_multipliers)
+                    trial_multipliers[service] = value
+                    checked += 1
+                    result = evaluate_multipliers(station, info, data, trial_multipliers)
+                    if result is None:
+                        continue
+                    feasible += 1
+                    key = optimization_key(result)
+                    if key > local_key:
+                        local_best = result
+                        local_key = key
+                        local_multiplier = value
+                if local_key > best_key:
+                    best = local_best
+                    best_key = local_key
+                    current_multipliers[service] = local_multiplier
+                    improved = True
+
+    print(
+        f"{station}: checked={checked}, feasible={feasible}, "
+        f"best_PR={best.profit_rate:.4%}, avg_multiplier={best.weighted_price_multiplier:.4f}"
+    )
     return best
 
 
@@ -702,7 +764,7 @@ L_{{i,t}}=\alpha_tM_i.
 \]
 于是价格约束后的月需求为
 \[
-Q_{{i,s,t,5}}(p)=N_{{i,5}}^t\operatorname{{round}}\left(\lambda_{{i,t,j}}(p)q_{{s,t}}^0\right),
+Q_{{i,s,t,5}}(p)=\operatorname{{round}}\left(N_{{i,5}}^t\lambda_{{i,t,j}}(p)q_{{s,t}}^0\right),
 \quad u_{{i,j}}=1.
 \]
 
@@ -756,22 +818,23 @@ A_j=365F_{{k(j)}}+\frac{{10000B_{{k(j)}}}}{{20}}.
 \frac{{\sum_iN_{{i,5}}\sum_j u_{{i,j}}S_{{ij}}(p)}}
 {{\sum_iN_{{i,5}}\sum_j u_{{i,j}}}}.
 \]
-当多组价格满意度相同且均满足利润率约束时，本文优先选择加权价格倍率更低、利润率更接近 \(4\%\) 的方案，使老人负担更低且机构仍保留微利空间。
+当多组方案的综合满意度和价格满意度相同且均满足利润率约束时，本文优先选择利润率更接近 \(4\%\) 的方案；若微利程度仍相同，再选择加权价格倍率更低的方案，使机构具有稳定运营余量，同时尽量降低老人负担。
 
 ## 3 求解算法
 
-为降低维度并保持站点内部价格体系简洁，本文采用 `docs/问题分析.md` 中的降维策略：每个服务站使用一个整体价格倍率 \(r_j\)，即同一站点内五类非紧急服务按相同倍率调整。候选价格倍率取
+为更贴合“各项服务自主定价”的题意，本文对每个站点设置五维非紧急服务价格倍率向量
 \[
-r_j\in\{{0.300,0.301,\ldots,1.199,1.200\}},
-\quad p_{{j,s}}=r_jp_s^0.
+\boldsymbol r_j=(r_{{j,m}},r_{{j,c}},r_{{j,n}},r_{{j,r}},r_{{j,b}}),
+\quad p_{{j,s}}=r_{{j,s}}p_s^0.
 \]
-对每个站点独立枚举 901 个价格倍率。每个价格倍率按如下步骤评价：
+其中 \(r_{{j,s}}\in[0.30,1.20]\)，紧急救助价格固定为 0。直接全枚举五维细网格计算量过大，因此采用“统一倍率初值 + 服务维度坐标搜索”的离散优化算法：
 
-1. 根据价格计算各小区、各老人类型的消费约束需求；
-2. 根据价格满意度、距离满意度和响应满意度迭代求得 \(S_{{ij}}\)；
-3. 计算实际有效服务人次、政府补贴、服务总利润和利润率；
-4. 对超过容量的有效需求按比例截断，并剔除利润率不在 \([0,8\%]\) 内的方案；
-5. 在可行价格向量中选择满意度最高的方案。
+1. 先令同一站点五类非紧急服务使用统一倍率 \(r\)，在 \(r=0.300,0.301,\ldots,1.200\) 上枚举，找到满足利润率约束的可行初值；
+2. 固定其他服务价格，依次对助餐、日间照料、上门护理、康复理疗、助浴五个服务维度做一维网格搜索；
+3. 网格步长依次取 \(0.01,0.002,0.001\)，每个步长下循环坐标搜索，直到价格向量不再改进；
+4. 每个候选价格向量均重新计算消费约束需求、价格满意度、响应满意度、实际有效服务人次、政府补贴、服务总利润和利润率；
+5. 若价格导致有效服务人次超过站点日容量，则按同一比例压缩实际服务量和对应收入、补贴、利润；剔除利润率不在 \([0,8\%]\) 内的方案；
+6. 按“综合满意度、价格满意度、利润率接近 4%、加权价格倍率、净利润较低”进行词典序筛选。
 
 ## 4 求解结果
 
@@ -809,7 +872,7 @@ r_j\in\{{0.300,0.301,\ldots,1.199,1.200\}},
 
 ## 6 结论
 
-在固定第二问站点和覆盖关系的条件下，本文通过枚举价格档位得到满足利润率约束的最优定价方案。各站点利润率均处于 \(0\%\) 到 \(8\%\) 之间，政府补贴有效降低了服务价格，同时使价格满意度保持满分。最终覆盖人口加权综合满意度为 {summary[3]["数值"]:.4f}，覆盖人口加权价格满意度为 {summary[4]["数值"]:.4f}，政府年度补贴总额为 {summary[5]["数值"]:.2f} 元。该结果为后续第四问的参数敏感性分析提供了基准定价和补贴方案。
+在固定第二问站点和覆盖关系的条件下，本文通过服务级价格倍率搜索得到满足利润率约束的定价方案。各站点利润率均处于 \(0\%\) 到 \(8\%\) 之间，政府补贴有效降低了服务价格，同时使价格满意度保持满分。最终覆盖人口加权综合满意度为 {summary[3]["数值"]:.4f}，覆盖人口加权价格满意度为 {summary[4]["数值"]:.4f}，政府年度补贴总额为 {summary[5]["数值"]:.2f} 元。该结果为后续第四问的参数敏感性分析提供了基准定价和补贴方案。
 """
     return paper
 

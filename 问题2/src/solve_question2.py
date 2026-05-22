@@ -890,7 +890,7 @@ def plot_outputs(solution) -> None:
     handles, labels = ax.get_legend_handles_labels()
     uniq = dict(zip(labels, handles))
     ax.legend(uniq.values(), uniq.keys(), loc="upper left", frameon=False, title="服务站规模")
-    ax.set_title("问题二最优服务站选址与覆盖关系", fontsize=15, fontweight="bold", pad=12)
+    ax.set_title("问题二推荐服务站选址与覆盖关系", fontsize=15, fontweight="bold", pad=12)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.spines[:].set_visible(False)
@@ -1025,7 +1025,7 @@ def build_paper(solution, summary_rows: list[dict[str, object]]) -> str:
 \\[
 \\max \\left(\\mathrm{{Cov}},\\overline S,\\sum_j \\Pi_j\\right)
 \\]
-筛选推荐方案，即先最大化覆盖率，再最大化覆盖人口加权满意度，若仍并列则选择年度利润更高的方案。由于小区分配没有穷举所有组合，本文的“最优”是指在上述分配规则和候选方案集合下的最优推荐方案。
+筛选推荐方案，即先最大化覆盖率，再最大化覆盖人口加权满意度，若仍并列则选择年度利润更高的方案。由于站点位置和规模已完整枚举、但小区分配采用多规则启发式与固定点迭代，本文将结果表述为“推荐方案”；若需严格全局最优，可进一步把小区分配写成混合整数规划求解。
 
 ## 2 模型建立
 
@@ -1161,7 +1161,7 @@ A_j=365F_{{k(j)}}+\\frac{{10000B_{{k(j)}}}}{{20}}.
 \\[
 O(4^n\\cdot L\\cdot n^2).
 \\]
-本题 \(n=10\)，实际可行方案数为 {solution["feasible_count"]}，因此可在普通计算机上直接完成精确搜索。
+本题 \(n=10\)，实际可行站点规模组合数为 {solution["feasible_count"]}，因此可在普通计算机上完整枚举候选站点方案，并对每个方案进行可复现的分配评价。
 
 ## 4 求解结果
 
@@ -1175,7 +1175,7 @@ O(4^n\\cdot L\\cdot n^2).
 
 {markdown_table(station_rows_, ["站点小区", "规模", "覆盖小区", "建设成本_万元", "日容量_人次", "日理论需求_人次", "日有效服务_人次", "利用率", "响应满意度"])}
 
-![问题二最优服务站选址与覆盖关系](../img/q2_station_layout.png)
+![问题二推荐服务站选址与覆盖关系](../img/q2_station_layout.png)
 
 ### 4.2 小区分配与满意度
 
