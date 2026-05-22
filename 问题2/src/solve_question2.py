@@ -17,12 +17,17 @@ MPL_CACHE_BOOTSTRAP = Path.cwd() / "问题2" / ".matplotlib-cache"
 MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
+    matplotlib.use("Agg")
 
-import matplotlib.font_manager as fm
-import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+except ModuleNotFoundError:
+    HAS_MATPLOTLIB = False
 import numpy as np
 
 
@@ -844,6 +849,9 @@ def financial_rows(best: PlanResult) -> list[dict[str, object]]:
 
 
 def plot_outputs(solution) -> None:
+    if not HAS_MATPLOTLIB:
+        print("matplotlib is not available; skip regenerating Question 2 images.")
+        return
     choose_font()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
     best: PlanResult = solution["best"]
@@ -1013,11 +1021,11 @@ def build_paper(solution, summary_rows: list[dict[str, object]]) -> str:
 \\[
 4^{{10}}=1,048,576.
 \\]
-因此本文采用精确枚举而不是启发式搜索。对每个满足预算的站点规模方案，按“容量允许时优先选择综合满意度最高站点”的原则进行固定点分配，并计算覆盖率、满意度、容量、利润等指标，最后按词典序
+因此本文对站点位置和规模组合进行完整枚举，并在每个满足预算的站点规模方案下，按“容量允许时优先选择综合满意度最高站点”的原则进行多规则启发式分配与固定点迭代，计算覆盖率、满意度、容量、利润等指标，最后按词典序
 \\[
 \\max \\left(\\mathrm{{Cov}},\\overline S,\\sum_j \\Pi_j\\right)
 \\]
-筛选最优方案，即先最大化覆盖率，再最大化覆盖人口加权满意度，若仍并列则选择年度利润更高的方案。
+筛选推荐方案，即先最大化覆盖率，再最大化覆盖人口加权满意度，若仍并列则选择年度利润更高的方案。由于小区分配没有穷举所有组合，本文的“最优”是指在上述分配规则和候选方案集合下的最优推荐方案。
 
 ## 2 模型建立
 
@@ -1103,7 +1111,7 @@ V_j=\\sum_{{i\\in I}}u_{{i,j}}D_i^dS_{{ij}}.
 V_j\\le C_{{k(j)}}.
 \\]
 
-由于 \(S_{{2,j}}\) 依赖利用率，而利用率又依赖分配和满意度，本文对每个站点方案进行固定点迭代：先令所有建成站点 \(S_2=1\)，据此在不突破站点容量的前提下按最高综合满意度准入覆盖小区；再计算实际有效服务人次、利用率和新的 \(S_2\)，重复直到分配和响应满意度稳定。若某小区在所有半径内站点上都会导致容量超限，则该小区暂不计入覆盖。
+由于 \(S_{{2,j}}\) 依赖利用率，而利用率又依赖分配和满意度，本文对每个站点方案进行固定点迭代：先令所有建成站点 \(S_2=1\)，据此在不突破站点容量的前提下按最高综合满意度准入覆盖小区；再计算实际有效服务人次、利用率和新的 \(S_2\)，重复直到分配和响应满意度稳定。若响应满意度在相邻档位间振荡，则取较低档作为保守响应满意度；若某小区在所有半径内站点上都会导致容量超限，则该小区暂不计入覆盖。
 
 ### 2.4 评价指标与利润核算
 
@@ -1137,7 +1145,7 @@ A_j=365F_{{k(j)}}+\\frac{{10000B_{{k(j)}}}}{{20}}.
 
 ## 3 求解算法
 
-精确枚举算法如下。
+站点方案枚举与启发式分配算法如下。
 
 1. 对 10 个候选小区生成“不建、小型、中型、大型”的全部组合；
 2. 删除建设成本超过 120 万元的方案；
@@ -1147,7 +1155,7 @@ A_j=365F_{{k(j)}}+\\frac{{10000B_{{k(j)}}}}{{20}}.
 6. 根据分配结果计算各站点理论需求、有效服务人次、利用率和新的响应满意度；
 7. 重复第 5-6 步直至分配和响应满意度稳定；
 8. 若小区无法在容量约束下分配，则视为未覆盖；对可行分配计算覆盖率、满意度、年度利润；
-9. 按 \((\\mathrm{{Cov}},\\overline S,\\sum_j\\Pi_j)\) 的词典序选择最终方案。
+9. 按 \((\\mathrm{{Cov}},\\overline S,\\sum_j\\Pi_j)\) 的词典序选择推荐方案。
 
 若小区数为 \(n\)，固定点迭代次数为 \(L\)，则枚举复杂度为
 \\[
@@ -1157,7 +1165,7 @@ O(4^n\\cdot L\\cdot n^2).
 
 ## 4 求解结果
 
-第 5 年末全街道老人总数为 {total_elderly} 人，消费约束后全街道月服务需求总人次为 {total_monthly_demand:.0f} 次。最优方案为：{selected_desc}。
+第 5 年末全街道老人总数为 {total_elderly} 人，消费约束后全街道月服务需求总人次为 {total_monthly_demand:.0f} 次。推荐方案为：{selected_desc}。
 
 核心指标如下。
 
@@ -1187,7 +1195,7 @@ O(4^n\\cdot L\\cdot n^2).
 
 ## 5 结果解释
 
-最优方案在 120 万元预算内使用 {best.build_cost_total:.0f} 万元，建设 {best.station_count} 个服务站，实现服务覆盖率 {best.coverage_rate:.2%}，覆盖人口加权满意度 {best.avg_satisfaction_covered:.4f}。由于容量约束较紧，最优方案选择优先覆盖老人规模大且单位容量收益较高的小区；部分小区即使位于某个服务半径内，若会导致站点容量超限，也不会被计入覆盖。
+推荐方案在 120 万元预算内使用 {best.build_cost_total:.0f} 万元，建设 {best.station_count} 个服务站，实现服务覆盖率 {best.coverage_rate:.2%}，覆盖人口加权满意度 {best.avg_satisfaction_covered:.4f}。由于容量约束较紧，推荐方案优先覆盖老人规模大且单位容量收益较高的小区；部分小区即使位于某个服务半径内，若会导致站点容量超限，也不会被计入覆盖。
 
 年度利润核算中，本文采用问题2基准价格口径，尚未引入问题3的政府补贴和自主定价机制。因此该利润仅作为站点方案的辅助评价指标；第三问还需要继续通过补贴与定价优化满足“保本微利、利润率不超过 8%”的政策目标。
 

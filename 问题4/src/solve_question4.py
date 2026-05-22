@@ -25,12 +25,17 @@ MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
 sys.dont_write_bytecode = True
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
+    matplotlib.use("Agg")
 
-import matplotlib.font_manager as fm
-import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+except ModuleNotFoundError:
+    HAS_MATPLOTLIB = False
 import numpy as np
 
 
@@ -273,7 +278,7 @@ def sensitivity_rows(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
         delta_sat = (row["问题3满意度"] - base["问题3满意度"]) / base["问题3满意度"]
         delta_subsidy = (row["政府补贴_元"] - base["政府补贴_元"]) / base["政府补贴_元"]
         delta_price = (row["平均价格倍率"] - base["平均价格倍率"]) / base["平均价格倍率"]
-        si = abs(delta_cov) + abs(delta_sat) + abs(delta_subsidy) + delta_sites
+        si = abs(delta_cov) + abs(delta_sat) + abs(delta_subsidy) + abs(delta_price) + delta_sites
         rows.append(
             {
                 "情景": row["情景"],
@@ -331,6 +336,9 @@ def markdown_table(rows: list[dict[str, Any]], headers: list[str] | None = None,
 
 
 def plot_outputs(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]], community_rows_: list[dict[str, Any]]) -> None:
+    if not HAS_MATPLOTLIB:
+        print("matplotlib is not available; skip regenerating Question 4 images.")
+        return
     choose_font()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
     labels = [row["情景"] for row in metrics]
@@ -467,6 +475,7 @@ def build_paper(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]]
 |\delta\mathrm{{Cov}}_r|+
 |\delta\overline S_r|+
 |\delta H_r|+
+|\delta p_r|+
 \Delta J_r.
 \]
 该指标越大，说明方案对该参数越敏感。
@@ -501,7 +510,7 @@ def build_paper(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]]
 
 ![各情景小区满意度热力图](../img/q4_community_satisfaction_heatmap.png)
 
-从综合敏感性指数看，最敏感的情景为“{top_sensitive}”，最稳定的情景为“{most_robust}”。预算提高会直接改变可建设规模并显著提高覆盖率，因此敏感性最高；老人增长率提高会引发站点重构，但覆盖率基本保持稳定；转移概率的小幅变化影响有限。运营成本增加20%主要通过提高价格倍率来维持利润率，并未改变站点集合、覆盖率、满意度和补贴，因此在本文等权敏感性指数下表现最稳定。
+从综合敏感性指数看，最敏感的情景为“{top_sensitive}”，最稳定的情景为“{most_robust}”。预算提高会直接改变可建设规模并显著提高覆盖率，因此敏感性最高；老人增长率提高会引发站点重构，但覆盖率基本保持稳定；转移概率的小幅变化影响有限。运营成本增加20%主要通过提高价格倍率来维持利润率，并未改变站点集合、覆盖率、满意度和补贴，因此在纳入价格变化后的综合指数中仍表现较稳定。
 
 ## 5 实际推广中的其他不确定因素与应对策略
 
@@ -516,7 +525,7 @@ def build_paper(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]]
 
 ## 6 结论
 
-本文对四类单因素变化进行了完整重求解。结果表明，当前基准方案在多数情景下仍能保持较高覆盖率和满意度；预算提高能够把覆盖率提升到100%，但也显著增加补贴支出。运营成本上升时站点布局保持不变，主要通过上调价格倍率消化成本压力。若政策目标是提高覆盖率，增加建设预算更直接有效；若政策目标是控制财政支出，则需要重点监测固定管理成本和补贴封顶标准。建议实际推广时采用滚动预测与年度复核机制，在老人结构、成本和预算发生明显变化时重新运行选址和定价模型。
+本文对四类单因素变化进行了完整重求解。结果表明，当前基准方案在多数情景下仍能保持较高覆盖率和满意度；预算提高能够把覆盖率提升到100%，但也显著增加补贴支出，说明扩建政策需要同步评估长期财政承受能力。运营成本上升时站点布局保持不变，主要通过上调价格倍率消化成本压力。若政策目标是提高覆盖率，增加建设预算更直接有效；若政策目标是控制财政支出，则需要重点监测固定管理成本和补贴封顶标准。建议实际推广时采用滚动预测与年度复核机制，在老人结构、成本和预算发生明显变化时重新运行选址和定价模型。
 """
     return paper
 

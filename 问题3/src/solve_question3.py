@@ -27,12 +27,17 @@ MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
 sys.dont_write_bytecode = True
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
+    matplotlib.use("Agg")
 
-import matplotlib.font_manager as fm
-import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+except ModuleNotFoundError:
+    HAS_MATPLOTLIB = False
 import numpy as np
 
 
@@ -53,7 +58,7 @@ TYPE_LABELS = q2.TYPE_LABELS
 SERVICE_ORDER = q2.SERVICE_ORDER
 PAID_SERVICES = [s for s in SERVICE_ORDER if s != "紧急救助"]
 DAYS_PER_MONTH = 30.0
-PRICE_GRID = [round(0.30 + 0.001 * i, 3) for i in range(701)]
+PRICE_GRID = [round(0.30 + 0.001 * i, 3) for i in range(901)]
 DAILY_SUBSIDY_CAP = {"小型": 1000.0, "中型": 1800.0, "大型": 2600.0}
 
 
@@ -265,6 +270,18 @@ def evaluate_station_prices(
             q_type = sum(demand_counts[community][service][elder_type] for service in SERVICE_ORDER)
             type_effective[elder_type] += q_type * satisfaction[community]
 
+    effective_daily = sum(effective_monthly.values()) / DAYS_PER_MONTH
+    if effective_daily > capacity + 1e-9:
+        capacity_scale = capacity / effective_daily
+        effective_daily = capacity
+        service_profit *= capacity_scale
+        subsidy_count *= capacity_scale
+        effective_by_service = {s: value * capacity_scale for s, value in effective_by_service.items()}
+        effective_monthly = {c: value * capacity_scale for c, value in effective_monthly.items()}
+        type_effective = {t: value * capacity_scale for t, value in type_effective.items()}
+        theta = 1.0
+        response_score = q2.response_satisfaction(theta)
+
     subsidy_before_cap = 12.0 * 2.0 * subsidy_count
     subsidy = min(365.0 * DAILY_SUBSIDY_CAP[scale], subsidy_before_cap)
     fixed_cost = 365.0 * station_costs[scale]["日固定成本"] + 10000.0 * station_costs[scale]["建设成本"] / 20.0
@@ -306,7 +323,7 @@ def evaluate_station_prices(
         type_economic_access=type_economic_access,
         monthly_demand=demand_counts,
         effective_by_service=effective_by_service,
-        effective_daily=sum(effective_monthly.values()) / DAYS_PER_MONTH,
+        effective_daily=effective_daily,
         theta=theta,
         response_score=response_score,
         subsidy=subsidy,
@@ -541,6 +558,9 @@ def markdown_table(rows: list[dict[str, Any]], headers: list[str] | None = None,
 
 
 def plot_outputs(solution) -> None:
+    if not HAS_MATPLOTLIB:
+        print("matplotlib is not available; skip regenerating Question 3 images.")
+        return
     choose_font()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
     prices = station_price_rows(solution)
@@ -639,15 +659,15 @@ def build_paper(solution) -> str:
 
 ## 1 问题重述与建模思路
 
-第三问固定第二问得到的最优站点方案，即 \(D\) 小区中型站、\(G\) 小区中型站、\(J\) 小区大型站，并保持第二问的覆盖关系不变。在此基础上，允许各服务站对助餐、日间照料、上门护理、康复理疗、助浴五类非紧急服务自主定价，紧急救助保持公益免费。政府对非紧急服务按实际有效服务人次补贴 2 元/人次，并设置单站每日补贴上限。优化目标是在满足机构“保本微利、利润率不超过 8%”的前提下，最大化老人满意度。
+第三问固定第二问得到的推荐站点方案，即 \(D\) 小区中型站、\(G\) 小区中型站、\(J\) 小区大型站，并保持第二问的覆盖关系不变。在此基础上，允许各服务站对助餐、日间照料、上门护理、康复理疗、助浴五类非紧急服务自主定价，紧急救助保持公益免费。政府对非紧急服务按实际有效服务人次补贴 2 元/人次，并设置单站每日补贴上限。优化目标是在满足机构“保本微利、利润率不超过 8%”的前提下，最大化老人满意度。
 
-本文沿用 `docs/问题分析.md` 中建议的“候选价格档位枚举 + 约束过滤”方法。由于站点和覆盖关系已经固定，各服务站之间不存在容量共享或价格联动约束，因此可对每个站点独立枚举价格向量，再汇总得到全局方案。考虑到第二问的站点已接近满负荷，第三问不再将价格变化后的容量作为硬筛选条件，而是通过利用率对应的响应满意度 \(S_2\) 反映高负荷对服务体验的影响。
+本文沿用 `docs/问题分析.md` 中建议的“候选价格档位枚举 + 约束过滤”方法。由于站点和覆盖关系已经固定，各服务站之间不存在容量共享或价格联动约束，因此可对每个站点独立枚举价格向量，再汇总得到全局方案。考虑到第二问的站点已接近满负荷，第三问仍将价格变化后的日有效服务人次不超过站点容量作为硬约束，并通过利用率对应的响应满意度 \(S_2\) 反映高负荷对服务体验的影响。若某价格下有效需求超过日容量，则按服务量比例截断实际服务人次，收入、补贴、利润和可及性均按实际服务量核算。
 
 ## 2 模型建立
 
 ### 2.1 决策变量
 
-给定问题二最优站点集合 \(J^\star=\{{D,G,J\}}\)，对每个站点 \(j\in J^\star\) 和每个服务 \(s\in S\)，设服务价格为
+给定问题二推荐站点集合 \(J^\star=\{{D,G,J\}}\)，对每个站点 \(j\in J^\star\) 和每个服务 \(s\in S\)，设服务价格为
 \[
 p_{{j,s}}\ge 0.
 \]
@@ -742,15 +762,15 @@ A_j=365F_{{k(j)}}+\frac{{10000B_{{k(j)}}}}{{20}}.
 
 为降低维度并保持站点内部价格体系简洁，本文采用 `docs/问题分析.md` 中的降维策略：每个服务站使用一个整体价格倍率 \(r_j\)，即同一站点内五类非紧急服务按相同倍率调整。候选价格倍率取
 \[
-r_j\in\{{0.300,0.301,\ldots,0.999,1.000\}},
+r_j\in\{{0.300,0.301,\ldots,1.199,1.200\}},
 \quad p_{{j,s}}=r_jp_s^0.
 \]
-对每个站点独立枚举 701 个价格倍率。每个价格倍率按如下步骤评价：
+对每个站点独立枚举 901 个价格倍率。每个价格倍率按如下步骤评价：
 
 1. 根据价格计算各小区、各老人类型的消费约束需求；
 2. 根据价格满意度、距离满意度和响应满意度迭代求得 \(S_{{ij}}\)；
 3. 计算实际有效服务人次、政府补贴、服务总利润和利润率；
-4. 剔除利润率不在 \([0,8\%]\) 内的方案；
+4. 对超过容量的有效需求按比例截断，并剔除利润率不在 \([0,8\%]\) 内的方案；
 5. 在可行价格向量中选择满意度最高的方案。
 
 ## 4 求解结果
