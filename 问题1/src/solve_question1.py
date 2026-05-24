@@ -6,9 +6,15 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
+import zipfile
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/matplotlib-codex-cache")
+sys.dont_write_bytecode = True
+MPL_CACHE_BOOTSTRAP = Path.cwd() / "问题1" / ".matplotlib-cache"
+MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
 
 import matplotlib
 
@@ -16,7 +22,6 @@ matplotlib.use("Agg")
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import pandas as pd
 
@@ -28,6 +33,21 @@ IMG_DIR = Q1_DIR / "img"
 DOC_DIR = Q1_DIR / "docs"
 TABLE_DIR = DOC_DIR / "tables"
 DATA_DIR = ROOT / "2026年电工杯竞赛赛题" / "2026年电工杯竞赛赛题" / "B题"
+COMMON_DIR = ROOT / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from plot_style import (  # noqa: E402
+    COLORS,
+    FIGSIZE_COMPACT,
+    FIGSIZE_TALL,
+    FIGSIZE_WIDE,
+    TYPE_PALETTE,
+    apply_axis_style,
+    configure_matplotlib,
+    make_colormap,
+    save_figure,
+)
 
 ATTACHMENT_1 = DATA_DIR / "附件1：小区基础数据.xlsx"
 ATTACHMENT_2 = DATA_DIR / "附件2：服务需求数据.xlsx"
@@ -58,9 +78,7 @@ def to_number(value: object) -> float:
     if isinstance(value, (int, float, np.integer, np.floating)):
         return float(value)
     text = str(value).strip()
-    if text.startswith("0"):
-        return 0.0
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    match = re.search(r"-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?", text)
     return float(match.group()) if match else math.nan
 
 
@@ -69,12 +87,85 @@ def round_half_up(value: float) -> int:
     return int(math.floor(float(value) + 0.5))
 
 
+def xlsx_sheets(path: Path) -> dict[str, list[list[str]]]:
+    """Read small xlsx sheets using only the standard library."""
+    ns = {
+        "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+
+    def col_index(cell_ref: str) -> int:
+        match = re.match(r"([A-Z]+)", cell_ref)
+        if not match:
+            return 1
+        col = 0
+        for ch in match.group(1):
+            col = col * 26 + ord(ch) - 64
+        return col
+
+    with zipfile.ZipFile(path) as zf:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("m:si", ns):
+                shared_strings.append("".join(t.text or "" for t in si.findall(".//m:t", ns)))
+
+        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        rid_to_target = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+        result: dict[str, list[list[str]]] = {}
+
+        for sheet in workbook.findall("m:sheets/m:sheet", ns):
+            name = sheet.attrib["name"]
+            rid = sheet.attrib[f"{{{ns['r']}}}id"]
+            target = rid_to_target[rid]
+            sheet_path = target[1:] if target.startswith("/") else f"xl/{target}"
+            sheet_root = ET.fromstring(zf.read(sheet_path))
+            rows: list[list[str]] = []
+            for row in sheet_root.findall("m:sheetData/m:row", ns):
+                values: dict[int, str] = {}
+                for cell in row.findall("m:c", ns):
+                    col = col_index(cell.attrib.get("r", "A1"))
+                    cell_type = cell.attrib.get("t")
+                    value = ""
+                    v = cell.find("m:v", ns)
+                    if v is not None:
+                        value = v.text or ""
+                        if cell_type == "s":
+                            value = shared_strings[int(value)]
+                    inline = cell.find("m:is", ns)
+                    if inline is not None:
+                        value = "".join(t.text or "" for t in inline.findall(".//m:t", ns))
+                    values[col] = value.strip()
+                if values:
+                    width = max(values)
+                    rows.append([values.get(i, "") for i in range(1, width + 1)])
+            result[name] = rows
+        return result
+
+
+def rows_to_dicts(rows: list[list[str]], header_row: int = 1) -> list[dict[str, str]]:
+    header = [cell.strip() for cell in rows[header_row]]
+    records = []
+    for row in rows[header_row + 1 :]:
+        if not any(str(cell).strip() for cell in row):
+            continue
+        padded = row + [""] * (len(header) - len(row))
+        records.append({header[i]: padded[i].strip() for i in range(len(header))})
+    return records
+
+
 def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.DataFrame, dict[str, float]]:
-    population = pd.read_excel(ATTACHMENT_1, sheet_name="人口与老人结构", header=1)
+    sheets1 = xlsx_sheets(ATTACHMENT_1)
+    sheets2 = xlsx_sheets(ATTACHMENT_2)
+
+    population = pd.DataFrame(rows_to_dicts(sheets1["人口与老人结构"], header_row=1))
     population = clean_columns(population).dropna(subset=[COMMUNITY_COL])
     population[COMMUNITY_COL] = population[COMMUNITY_COL].astype(str).str.strip()
+    for col in ["总人口", "60+老人数", "自理老人", "半失能老人", "失能老人", "人均月收入(元)"]:
+        population[col] = population[col].map(to_number)
 
-    transitions = pd.read_excel(ATTACHMENT_1, sheet_name="转移概率", header=1)
+    transitions = pd.DataFrame(rows_to_dicts(sheets1["转移概率"], header_row=1))
     transitions = clean_columns(transitions).dropna(how="all")
     transitions["转移类型"] = transitions["转移类型"].astype(str).str.strip()
     transition_probs = {}
@@ -83,7 +174,7 @@ def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.Data
         prob = to_number(row["年度转移概率参考区间"])
         transition_probs[key] = prob
 
-    demand = pd.read_excel(ATTACHMENT_2, sheet_name="每位老人月均服务需求次数", header=1)
+    demand = pd.DataFrame(rows_to_dicts(sheets2["每位老人月均服务需求次数"], header_row=1))
     demand = clean_columns(demand).dropna(subset=["服务项目"])
     demand["服务项目"] = demand["服务项目"].astype(str).str.strip()
     demand = demand.rename(columns={"自理": "自理", "半自理": "半失能", "失能": "失能"})
@@ -91,7 +182,7 @@ def read_inputs() -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame, pd.Data
         demand[col] = demand[col].map(to_number)
     demand = demand.set_index("服务项目").loc[SERVICE_ORDER].reset_index()
 
-    revenue = pd.read_excel(ATTACHMENT_2, sheet_name="服务营收及支出", header=1)
+    revenue = pd.DataFrame(rows_to_dicts(sheets2["服务营收及支出"], header_row=1))
     revenue = clean_columns(revenue).dropna(subset=["服务项目"])
     revenue["服务项目"] = revenue["服务项目"].astype(str).str.strip()
     revenue["基准价格"] = revenue["单次服务营收（元）"].map(to_number)
@@ -328,26 +419,7 @@ def build_demand_tables(
 
 
 def choose_font() -> None:
-    preferred = [
-        "PingFang SC",
-        "Heiti SC",
-        "Songti SC",
-        "STHeiti",
-        "Arial Unicode MS",
-        "Noto Sans CJK SC",
-        "Microsoft YaHei",
-        "SimHei",
-    ]
-    for font in preferred:
-        try:
-            fm.findfont(font, fallback_to_default=False)
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except ValueError:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.facecolor"] = "white"
+    configure_matplotlib(plt, fm)
 
 
 def plot_outputs(
@@ -358,11 +430,7 @@ def plot_outputs(
 ) -> None:
     choose_font()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
-    palette = {
-        "自理": "#4C78A8",
-        "半失能": "#F58518",
-        "失能": "#E45756",
-    }
+    palette = TYPE_PALETTE
 
     totals_by_year = forecast.groupby("年份")[TYPE_LABELS + ["老人总数"]].sum().reset_index()
     years = totals_by_year["年份"].to_numpy()
@@ -371,19 +439,19 @@ def plot_outputs(
     fig, (ax_total, ax_share) = plt.subplots(
         2,
         1,
-        figsize=(9.2, 6.2),
+        figsize=FIGSIZE_TALL,
         sharex=True,
         gridspec_kw={"height_ratios": [1.45, 1.0], "hspace": 0.26},
     )
     ax_total.plot(
         years,
         totals_by_year["老人总数"],
-        color="#172033",
+        color=COLORS["ink"],
         linewidth=2.4,
         marker="o",
         markersize=5.8,
     )
-    ax_total.fill_between(years, totals_by_year["老人总数"], color="#4C78A8", alpha=0.13)
+    ax_total.fill_between(years, totals_by_year["老人总数"], color=COLORS["blue"], alpha=0.12)
     for year, total in zip(years, totals_by_year["老人总数"]):
         ax_total.annotate(
             f"{int(total)}",
@@ -392,16 +460,15 @@ def plot_outputs(
             textcoords="offset points",
             ha="center",
             fontsize=8.5,
-            color="#374151",
+            color=COLORS["muted"],
         )
     y_min = totals_by_year["老人总数"].min() - 180
     y_max = totals_by_year["老人总数"].max() + 220
     ax_total.set_ylim(y_min, y_max)
     ax_total.set_ylabel("老人总数")
-    ax_total.set_title("未来五年老人总量与类型占比预测", fontsize=15, fontweight="bold", pad=12)
-    ax_total.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax_total.set_title("未来五年老人总量与类型占比预测")
+    apply_axis_style(ax_total, grid="y")
     ax_total.tick_params(axis="x", labelbottom=False)
-    ax_total.spines[["top", "right"]].set_visible(False)
 
     for elder_type in TYPE_LABELS:
         ax_share.plot(
@@ -427,15 +494,14 @@ def plot_outputs(
     ax_share.set_xticks(years)
     ax_share.set_xlabel("年份")
     ax_share.set_ylabel("占比（%）")
-    ax_share.grid(axis="y", color="#E5E7EB", linewidth=0.9)
-    ax_share.spines[["top", "right"]].set_visible(False)
+    apply_axis_style(ax_share, grid="y")
     fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.92)
-    fig.savefig(IMG_DIR / "q1_elderly_structure_trend.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_elderly_structure_trend.png")
     plt.close(fig)
 
     year5 = forecast[forecast["年份"] == 5].copy()
     year5 = year5.sort_values("老人总数", ascending=True)
-    fig, ax = plt.subplots(figsize=(9.2, 5.8))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     left = np.zeros(len(year5))
     y_pos = np.arange(len(year5))
     for elder_type in TYPE_LABELS:
@@ -446,38 +512,36 @@ def plot_outputs(
     ax.set_yticklabels(year5["小区"])
     ax.set_xlabel("第5年末老人数量")
     ax.set_ylabel("小区")
-    ax.set_title("第5年末各小区老人类型结构", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="x", color="#D1D5DB", linewidth=0.8, alpha=0.7)
+    ax.set_title("第5年末各小区老人类型结构")
+    apply_axis_style(ax, grid="x")
     ax.legend(ncol=3, loc="lower right", frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q1_year5_community_structure.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_year5_community_structure.png")
     plt.close(fig)
 
     theoretical_total = theoretical_by_type.set_index("服务项目")["合计"].reindex(SERVICE_ORDER)
     constrained_total = constrained_by_type.set_index("服务项目")["合计"].reindex(SERVICE_ORDER)
     x = np.arange(len(SERVICE_ORDER))
     width = 0.38
-    fig, ax = plt.subplots(figsize=(9.2, 5.6))
-    ax.bar(x - width / 2, theoretical_total, width=width, color="#4C78A8", label="理论需求")
-    ax.bar(x + width / 2, constrained_total, width=width, color="#54A24B", label="消费约束后需求")
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+    ax.bar(x - width / 2, theoretical_total, width=width, color=COLORS["blue"], label="理论需求")
+    ax.bar(x + width / 2, constrained_total, width=width, color=COLORS["green"], label="消费约束后需求")
     ax.set_xticks(x)
     ax.set_xticklabels(SERVICE_ORDER, rotation=20, ha="right")
     ax.set_ylabel("月需求总次数")
-    ax.set_title("第5年末各服务月需求：理论值与消费约束后对比", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#D1D5DB", linewidth=0.8, alpha=0.7)
+    ax.set_title("第5年末各服务月需求：理论值与消费约束后对比")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q1_service_demand_comparison.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_service_demand_comparison.png")
     plt.close(fig)
 
     heat = scaling.pivot(index="小区", columns="老人类型", values="削减系数").reindex(columns=TYPE_LABELS)
-    cmap = LinearSegmentedColormap.from_list(
+    cmap = make_colormap(
         "constraint_scale",
-        ["#B91C1C", "#F59E0B", "#FDE68A", "#3F8F5F"],
+        [COLORS["red"], "#D99755", "#F0D58B", "#9CCB8F", "#3F8F6A"],
     )
-    fig, ax = plt.subplots(figsize=(6.6, 5.8))
+    fig, ax = plt.subplots(figsize=FIGSIZE_COMPACT)
     values = heat.to_numpy()
     mesh = ax.pcolormesh(
         np.arange(values.shape[1] + 1),
@@ -499,9 +563,9 @@ def plot_outputs(
     for i in range(values.shape[0]):
         for j in range(values.shape[1]):
             val = values[i, j]
-            color = "white" if val < 0.78 else "#111827"
+            color = "white" if val < 0.78 else COLORS["ink"]
             ax.text(j + 0.5, i + 0.5, f"{val:.0%}", ha="center", va="center", color=color, fontsize=9.5)
-    ax.set_title("消费约束削减系数", fontsize=14, fontweight="bold", pad=18)
+    ax.set_title("消费约束削减系数", pad=18)
     fig.text(
         0.10,
         0.03,
@@ -509,7 +573,7 @@ def plot_outputs(
         ha="left",
         va="center",
         fontsize=8.6,
-        color="#4B5563",
+        color=COLORS["muted"],
     )
     cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03, shrink=0.82)
     cbar.set_label("保留比例")
@@ -517,7 +581,7 @@ def plot_outputs(
     cbar.set_ticklabels(["65%", "75%", "85%", "95%", "100%"])
     ax.spines[:].set_visible(False)
     fig.subplots_adjust(top=0.86, bottom=0.10, left=0.12, right=0.88)
-    fig.savefig(IMG_DIR / "q1_consumption_scaling_heatmap.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_consumption_scaling_heatmap.png")
     plt.close(fig)
 
 
