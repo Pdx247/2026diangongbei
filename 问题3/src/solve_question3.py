@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 Q3_DIR = ROOT / "问题3"
 SRC_DIR = Q3_DIR / "src"
@@ -21,11 +22,24 @@ DOC_DIR = Q3_DIR / "docs"
 TABLE_DIR = DOC_DIR / "tables"
 Q2_SRC = ROOT / "问题2" / "src" / "solve_question2.py"
 Q2_TABLE_DIR = ROOT / "问题2" / "docs" / "tables"
+COMMON_DIR = ROOT / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from plot_style import (  # noqa: E402
+    COLORS,
+    FIGSIZE_COMPACT,
+    FIGSIZE_WIDE,
+    SERVICE_PALETTE,
+    apply_axis_style,
+    apply_twin_axis_style,
+    configure_matplotlib,
+    save_figure,
+)
 
 MPL_CACHE_BOOTSTRAP = Q3_DIR / ".matplotlib-cache"
 MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
-sys.dont_write_bytecode = True
 
 try:
     import matplotlib
@@ -95,17 +109,7 @@ class StationPricingResult:
 
 
 def choose_font() -> None:
-    preferred = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "PingFang SC", "Arial Unicode MS"]
-    for font in preferred:
-        try:
-            fm.findfont(font, fallback_to_default=False)
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except ValueError:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.facecolor"] = "white"
+    configure_matplotlib(plt, fm)
 
 
 def read_csv_dicts(path: Path) -> list[dict[str, str]]:
@@ -119,7 +123,7 @@ def export_csv(path: Path, rows: list[dict[str, Any]], headers: list[str] | None
     if headers is None:
         headers = list(rows[0].keys())
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -633,76 +637,73 @@ def plot_outputs(solution) -> None:
     x = np.arange(len(solution["results"]))
     services = PAID_SERVICES
     width = 0.14
-    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     for idx, service in enumerate(services):
         ax.bar(
             x + (idx - 2) * width,
             [row[f"{service}价格"] for row in prices],
             width=width,
             label=service,
+            color=SERVICE_PALETTE[service],
         )
     ax.set_xticks(x)
     ax.set_xticklabels([row["站点"] for row in prices])
     ax.set_ylabel("价格（元/次）")
-    ax.set_title("各服务站最优服务定价", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax.set_title("各服务站最优服务定价")
+    apply_axis_style(ax, grid="y")
     ax.legend(ncol=3, frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q3_station_prices.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q3_station_prices.png")
     plt.close(fig)
 
-    fig, ax1 = plt.subplots(figsize=(8.8, 5.0))
+    fig, ax1 = plt.subplots(figsize=FIGSIZE_WIDE)
     ax2 = ax1.twinx()
     stations = [row["站点"] for row in financial]
-    ax1.bar(np.arange(len(stations)) - 0.18, [row["政府补贴_元"] / 10000 for row in financial], 0.36, color="#4C78A8", label="政府补贴")
-    ax1.bar(np.arange(len(stations)) + 0.18, [row["年度净利润_元"] / 10000 for row in financial], 0.36, color="#F58518", label="年度净利润")
-    ax2.plot(np.arange(len(stations)), [row["利润率"] * 100 for row in financial], color="#E45756", marker="o", linewidth=2.2, label="利润率")
-    ax2.axhline(8, color="#9CA3AF", linestyle="--", linewidth=1.5)
+    ax1.bar(np.arange(len(stations)) - 0.18, [row["政府补贴_元"] / 10000 for row in financial], 0.36, color=COLORS["blue"], label="政府补贴")
+    ax1.bar(np.arange(len(stations)) + 0.18, [row["年度净利润_元"] / 10000 for row in financial], 0.36, color=COLORS["orange"], label="年度净利润")
+    ax2.plot(np.arange(len(stations)), [row["利润率"] * 100 for row in financial], color=COLORS["red"], marker="o", linewidth=2.0, label="利润率")
+    ax2.axhline(8, color=COLORS["axis"], linestyle="--", linewidth=1.3)
     ax1.set_xticks(np.arange(len(stations)))
     ax1.set_xticklabels(stations)
     ax1.set_ylabel("金额（万元）")
     ax2.set_ylabel("利润率（%）")
-    ax1.set_title("补贴、净利润与利润率", fontsize=15, fontweight="bold", pad=12)
-    ax1.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax1.set_title("补贴、净利润与利润率")
+    apply_axis_style(ax1, grid="y")
+    apply_twin_axis_style(ax2)
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(handles1 + handles2, labels1 + labels2, frameon=False, loc="upper left")
-    ax1.spines[["top"]].set_visible(False)
-    ax2.spines[["top"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q3_profit_subsidy.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q3_profit_subsidy.png")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(9.2, 4.8))
-    ax.bar([row["小区"] for row in communities], [row["综合满意度"] for row in communities], color="#4C78A8", width=0.68, label="综合满意度")
-    ax.plot([row["小区"] for row in communities], [row["价格满意度"] for row in communities], color="#E45756", marker="o", linewidth=2.0, label="价格满意度")
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+    ax.bar([row["小区"] for row in communities], [row["综合满意度"] for row in communities], color=COLORS["blue"], width=0.68, label="综合满意度")
+    ax.plot([row["小区"] for row in communities], [row["价格满意度"] for row in communities], color=COLORS["red"], marker="o", linewidth=2.0, label="价格满意度")
     ax.set_ylim(0.55, 1.03)
     ax.set_ylabel("得分")
-    ax.set_title("各小区综合满意度与价格满意度", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax.set_title("各小区综合满意度与价格满意度")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False, loc="lower right")
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q3_community_satisfaction_price.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q3_community_satisfaction_price.png")
     plt.close(fig)
 
     labels = [row["老人类型"] for row in access]
     x = np.arange(len(labels))
-    fig, ax = plt.subplots(figsize=(8.8, 5.0))
-    ax.bar(x - 0.24, [row["服务可及性"] for row in access], 0.24, label="服务可及性", color="#4C78A8")
-    ax.bar(x, [row["经济可及性"] for row in access], 0.24, label="经济可及性", color="#54A24B")
-    ax.bar(x + 0.24, [row["地理可及性"] for row in access], 0.24, label="地理可及性", color="#F58518")
+    fig, ax = plt.subplots(figsize=FIGSIZE_COMPACT)
+    ax.bar(x - 0.24, [row["服务可及性"] for row in access], 0.24, label="服务可及性", color=COLORS["blue"])
+    ax.bar(x, [row["经济可及性"] for row in access], 0.24, label="经济可及性", color=COLORS["green"])
+    ax.bar(x + 0.24, [row["地理可及性"] for row in access], 0.24, label="地理可及性", color=COLORS["gold"])
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("可及性指标")
-    ax.set_title("不同类型老人服务可及性", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax.set_title("不同类型老人服务可及性")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False, loc="lower right")
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q3_accessibility_by_type.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q3_accessibility_by_type.png")
     plt.close(fig)
 
 

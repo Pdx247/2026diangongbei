@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 Q4_DIR = ROOT / "问题4"
 SRC_DIR = Q4_DIR / "src"
@@ -19,11 +20,24 @@ DOC_DIR = Q4_DIR / "docs"
 TABLE_DIR = DOC_DIR / "tables"
 Q2_SRC = ROOT / "问题2" / "src" / "solve_question2.py"
 Q3_SRC = ROOT / "问题3" / "src" / "solve_question3.py"
+COMMON_DIR = ROOT / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from plot_style import (  # noqa: E402
+    COLORS,
+    FIGSIZE_HEATMAP,
+    FIGSIZE_WIDE,
+    apply_axis_style,
+    apply_twin_axis_style,
+    configure_matplotlib,
+    make_colormap,
+    save_figure,
+)
 
 MPL_CACHE_BOOTSTRAP = Q4_DIR / ".matplotlib-cache"
 MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
-sys.dont_write_bytecode = True
 
 try:
     import matplotlib
@@ -79,17 +93,7 @@ SCENARIOS = [
 
 
 def choose_font() -> None:
-    preferred = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "PingFang SC", "Arial Unicode MS"]
-    for font in preferred:
-        try:
-            fm.findfont(font, fallback_to_default=False)
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except ValueError:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.facecolor"] = "white"
+    configure_matplotlib(plt, fm)
 
 
 def export_csv(path: Path, rows: list[dict[str, Any]], headers: list[str] | None = None) -> None:
@@ -98,7 +102,7 @@ def export_csv(path: Path, rows: list[dict[str, Any]], headers: list[str] | None
     if headers is None:
         headers = list(rows[0].keys())
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -344,49 +348,46 @@ def plot_outputs(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]
     labels = [row["情景"] for row in metrics]
     x = np.arange(len(labels))
 
-    fig, ax = plt.subplots(figsize=(10.2, 5.4))
-    ax.bar(x - 0.18, [row["覆盖率"] for row in metrics], 0.36, label="覆盖率", color="#4C78A8")
-    ax.bar(x + 0.18, [row["问题3满意度"] for row in metrics], 0.36, label="满意度", color="#54A24B")
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+    ax.bar(x - 0.18, [row["覆盖率"] for row in metrics], 0.36, label="覆盖率", color=COLORS["blue"])
+    ax.bar(x + 0.18, [row["问题3满意度"] for row in metrics], 0.36, label="满意度", color=COLORS["green"])
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=15, ha="right")
     ax.set_ylim(0.75, 1.02)
     ax.set_ylabel("指标值")
-    ax.set_title("情景覆盖率与满意度对比", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax.set_title("情景覆盖率与满意度对比")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q4_coverage_satisfaction.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q4_coverage_satisfaction.png")
     plt.close(fig)
 
-    fig, ax1 = plt.subplots(figsize=(10.2, 5.4))
+    fig, ax1 = plt.subplots(figsize=FIGSIZE_WIDE)
     ax2 = ax1.twinx()
-    ax1.bar(x, [row["政府补贴_元"] / 10000 for row in metrics], color="#4C78A8", width=0.55, label="政府补贴")
-    ax2.plot(x, [row["平均价格倍率"] for row in metrics], color="#E45756", marker="o", linewidth=2.2, label="平均价格倍率")
+    ax1.bar(x, [row["政府补贴_元"] / 10000 for row in metrics], color=COLORS["blue"], width=0.55, label="政府补贴")
+    ax2.plot(x, [row["平均价格倍率"] for row in metrics], color=COLORS["red"], marker="o", linewidth=2.0, label="平均价格倍率")
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels, rotation=15, ha="right")
     ax1.set_ylabel("政府补贴（万元）")
     ax2.set_ylabel("平均价格倍率")
-    ax1.set_title("情景补贴总额与价格倍率对比", fontsize=15, fontweight="bold", pad=12)
-    ax1.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax1.set_title("情景补贴总额与价格倍率对比")
+    apply_axis_style(ax1, grid="y")
+    apply_twin_axis_style(ax2)
     h1, l1 = ax1.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
     ax1.legend(h1 + h2, l1 + l2, frameon=False, loc="upper left")
-    ax1.spines[["top"]].set_visible(False)
-    ax2.spines[["top"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q4_subsidy_price.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q4_subsidy_price.png")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(8.8, 5.2))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     sens_sorted = sorted(sensitivity, key=lambda row: row["综合敏感性指数"])
-    ax.barh([row["情景"] for row in sens_sorted], [row["综合敏感性指数"] for row in sens_sorted], color="#F58518")
+    ax.barh([row["情景"] for row in sens_sorted], [row["综合敏感性指数"] for row in sens_sorted], color=COLORS["gold"])
     ax.set_xlabel("综合敏感性指数")
-    ax.set_title("参数敏感性排序", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="x", color="#E5E7EB", linewidth=0.9)
-    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("参数敏感性排序")
+    apply_axis_style(ax, grid="x")
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q4_sensitivity_index.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q4_sensitivity_index.png")
     plt.close(fig)
 
     heat = np.zeros((len(metrics), len(COMMUNITIES)))
@@ -394,21 +395,28 @@ def plot_outputs(metrics: list[dict[str, Any]], sensitivity: list[dict[str, Any]
     community_to_idx = {c: idx for idx, c in enumerate(COMMUNITIES)}
     for row in community_rows_:
         heat[scenario_to_idx[row["情景"]], community_to_idx[row["小区"]]] = row["满意度"]
-    fig, ax = plt.subplots(figsize=(9.5, 5.0))
-    mesh = ax.imshow(heat, aspect="auto", cmap="YlGnBu", vmin=0.0, vmax=1.0)
+    fig, ax = plt.subplots(figsize=FIGSIZE_HEATMAP)
+    satisfaction_cmap = make_colormap("satisfaction_heat", ["#D9E6EF", "#A9C9D5", "#74AAA6", COLORS["green"], "#2F7E69"])
+    satisfaction_cmap.set_under(COLORS["light_gray"])
+    mesh = ax.imshow(heat, aspect="auto", cmap=satisfaction_cmap, vmin=0.75, vmax=1.0)
     ax.set_xticks(np.arange(len(COMMUNITIES)))
     ax.set_xticklabels(COMMUNITIES)
     ax.set_yticks(np.arange(len(metrics)))
     ax.set_yticklabels(labels)
+    ax.set_xticks(np.arange(-0.5, len(COMMUNITIES), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(metrics), 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=1.2)
+    ax.tick_params(which="minor", bottom=False, left=False)
     for i in range(heat.shape[0]):
         for j in range(heat.shape[1]):
-            color = "white" if heat[i, j] < 0.35 else "#111827"
+            color = COLORS["muted"] if heat[i, j] < 0.05 else COLORS["ink"]
             ax.text(j, i, f"{heat[i, j]:.2f}", ha="center", va="center", fontsize=8, color=color)
-    ax.set_title("各情景小区满意度热力图", fontsize=15, fontweight="bold", pad=12)
-    cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03)
+    ax.set_title("各情景小区满意度热力图")
+    ax.spines[:].set_visible(False)
+    cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03, extend="min")
     cbar.set_label("满意度")
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q4_community_satisfaction_heatmap.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q4_community_satisfaction_heatmap.png")
     plt.close(fig)
 
 

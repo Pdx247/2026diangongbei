@@ -8,11 +8,13 @@ import itertools
 import math
 import os
 import re
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+sys.dont_write_bytecode = True
 MPL_CACHE_BOOTSTRAP = Path.cwd() / "问题2" / ".matplotlib-cache"
 MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
@@ -24,6 +26,7 @@ try:
 
     import matplotlib.font_manager as fm
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     HAS_MATPLOTLIB = True
 except ModuleNotFoundError:
@@ -39,6 +42,21 @@ DOC_DIR = Q2_DIR / "docs"
 TABLE_DIR = DOC_DIR / "tables"
 DATA_DIR = ROOT / "2026年电工杯竞赛赛题" / "2026年电工杯竞赛赛题" / "B题"
 MPL_CACHE_DIR = Q2_DIR / ".matplotlib-cache"
+COMMON_DIR = ROOT / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from plot_style import (  # noqa: E402
+    COLORS,
+    FIGSIZE_NETWORK,
+    FIGSIZE_WIDE,
+    SCALE_PALETTE,
+    apply_axis_style,
+    apply_twin_axis_style,
+    configure_matplotlib,
+    make_colormap,
+    save_figure,
+)
 
 ATTACHMENT_1 = DATA_DIR / "附件1：小区基础数据.xlsx"
 ATTACHMENT_2 = DATA_DIR / "附件2：服务需求数据.xlsx"
@@ -715,23 +733,7 @@ def solve_question2(inputs):
 
 
 def choose_font() -> None:
-    preferred = [
-        "Microsoft YaHei",
-        "SimHei",
-        "Noto Sans CJK SC",
-        "PingFang SC",
-        "Arial Unicode MS",
-    ]
-    for font in preferred:
-        try:
-            fm.findfont(font, fallback_to_default=False)
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except ValueError:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.facecolor"] = "white"
+    configure_matplotlib(plt, fm)
 
 
 def classical_mds(distance: dict[str, dict[str, float]]) -> dict[str, tuple[float, float]]:
@@ -753,7 +755,7 @@ def export_csv(path: Path, rows: list[dict[str, object]], headers: list[str] | N
     if headers is None:
         headers = list(rows[0].keys())
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -861,12 +863,12 @@ def plot_outputs(solution) -> None:
     evaluated = solution["evaluated"]
 
     coords = classical_mds(distance)
-    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    fig, ax = plt.subplots(figsize=FIGSIZE_NETWORK)
     for community in COMMUNITIES:
         x, y = coords[community]
-        ax.scatter(x, y, s=160, color="#E5E7EB", edgecolor="#374151", linewidth=1.0, zorder=2)
-        ax.text(x, y, community, ha="center", va="center", fontsize=10, fontweight="bold", color="#111827", zorder=3)
-    scale_color = {"小型": "#54A24B", "中型": "#F58518", "大型": "#E45756"}
+        ax.scatter(x, y, s=150, color="white", edgecolor=COLORS["axis"], linewidth=1.0, zorder=3)
+        ax.text(x, y, community, ha="center", va="center", fontsize=10, fontweight="semibold", color=COLORS["ink"], zorder=4)
+    scale_color = SCALE_PALETTE
     scale_size = {"小型": 330, "中型": 460, "大型": 590}
     for station in best.stations:
         x, y = coords[station.community]
@@ -875,10 +877,10 @@ def plot_outputs(solution) -> None:
             y,
             s=scale_size[station.scale],
             color=scale_color[station.scale],
-            alpha=0.88,
-            edgecolor="#111827",
-            linewidth=1.1,
-            zorder=1,
+            alpha=0.82,
+            edgecolor=COLORS["ink"],
+            linewidth=0.9,
+            zorder=2,
             label=station.scale,
         )
     for community, sid in best.assignment.items():
@@ -886,87 +888,101 @@ def plot_outputs(solution) -> None:
             continue
         x1, y1 = coords[community]
         x2, y2 = coords[sid]
-        ax.plot([x1, x2], [y1, y2], color="#6B7280", linewidth=1.1, alpha=0.55, zorder=0)
-    handles, labels = ax.get_legend_handles_labels()
-    uniq = dict(zip(labels, handles))
-    ax.legend(uniq.values(), uniq.keys(), loc="upper left", frameon=False, title="服务站规模")
-    ax.set_title("问题二推荐服务站选址与覆盖关系", fontsize=15, fontweight="bold", pad=12)
+        ax.plot([x1, x2], [y1, y2], color=COLORS["axis"], linewidth=1.0, alpha=0.72, zorder=1)
+    present_scales = [scale for scale in SCALE_ORDER if any(station.scale == scale for station in best.stations)]
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=scale_color[scale],
+            markeredgecolor=COLORS["ink"],
+            markeredgewidth=0.9,
+            markersize=10,
+            label=scale,
+        )
+        for scale in present_scales
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", frameon=False, title="服务站规模", labelspacing=0.7)
+    ax.set_title("问题二推荐服务站选址与覆盖关系")
     ax.set_xticks([])
     ax.set_yticks([])
     ax.spines[:].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q2_station_layout.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q2_station_layout.png")
     plt.close(fig)
 
     community_data = community_rows(best, year5, monthly_total, distance)
-    fig, ax = plt.subplots(figsize=(9.2, 4.8))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     vals = [row["综合满意度"] for row in community_data]
-    colors = ["#4C78A8" if row["分配站点"] != "未覆盖" else "#D1D5DB" for row in community_data]
+    colors = [COLORS["blue"] if row["分配站点"] != "未覆盖" else COLORS["light_gray"] for row in community_data]
     ax.bar(COMMUNITIES, vals, color=colors, width=0.68)
-    ax.axhline(best.avg_satisfaction_covered, color="#E45756", linewidth=2, linestyle="--", label="覆盖人口加权平均")
+    ax.axhline(best.avg_satisfaction_covered, color=COLORS["red"], linewidth=1.8, linestyle="--", label="覆盖人口加权平均")
     ax.set_ylim(0.55, 1.02)
     ax.set_ylabel("满意度")
-    ax.set_title("各小区老人综合满意度", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax.set_title("各小区老人综合满意度")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False, loc="lower right")
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q2_community_satisfaction.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q2_community_satisfaction.png")
     plt.close(fig)
 
     station_rows_ = station_plan_rows(best)
     xlabels = [row["站点小区"] for row in station_rows_]
     load = [row["利用率"] for row in station_rows_]
     profit = [best.profit[row["站点小区"]] / 10000.0 for row in station_rows_]
-    fig, ax1 = plt.subplots(figsize=(8.8, 5.0))
+    fig, ax1 = plt.subplots(figsize=FIGSIZE_WIDE)
     ax2 = ax1.twinx()
-    bars = ax1.bar(np.arange(len(xlabels)) - 0.18, load, width=0.36, color="#4C78A8", label="利用率")
-    ax2.bar(np.arange(len(xlabels)) + 0.18, profit, width=0.36, color="#F58518", label="年度利润")
+    bars = ax1.bar(np.arange(len(xlabels)) - 0.18, load, width=0.36, color=COLORS["blue"], label="利用率")
+    ax2.bar(np.arange(len(xlabels)) + 0.18, profit, width=0.36, color=COLORS["orange"], label="年度利润")
     ax1.set_xticks(np.arange(len(xlabels)))
     ax1.set_xticklabels(xlabels)
     ax1.set_ylim(0, max(1.0, max(load) * 1.15))
     ax1.set_ylabel("利用率")
     ax2.set_ylabel("年度利润（万元）")
-    ax1.set_title("服务站利用率与年度利润", fontsize=15, fontweight="bold", pad=12)
-    ax1.grid(axis="y", color="#E5E7EB", linewidth=0.9)
-    ax1.spines[["top"]].set_visible(False)
-    ax2.spines[["top"]].set_visible(False)
+    ax1.set_title("服务站利用率与年度利润")
+    apply_axis_style(ax1, grid="y")
+    apply_twin_axis_style(ax2)
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(handles1 + handles2, labels1 + labels2, frameon=False, loc="upper left")
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q2_station_load_profit.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q2_station_load_profit.png")
     plt.close(fig)
 
     top_plot = evaluated[:: max(1, len(evaluated) // 25000)]
-    fig, ax = plt.subplots(figsize=(8.6, 5.4))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+    cost_cmap = make_colormap("cost_scale", ["#DCE8F2", "#8FB2C9", COLORS["blue"], "#1F3C5C"])
     sc = ax.scatter(
         [row["覆盖率"] for row in top_plot],
         [row["覆盖人口满意度"] for row in top_plot],
         c=[row["建设成本_万元"] for row in top_plot],
         s=18,
-        cmap="viridis",
-        alpha=0.58,
+        cmap=cost_cmap,
+        alpha=0.62,
         linewidth=0,
     )
     ax.scatter(
         [best.coverage_rate],
         [best.avg_satisfaction_covered],
-        color="#E45756",
+        color=COLORS["red"],
         s=90,
         marker="*",
+        edgecolor="white",
+        linewidth=0.8,
         label="最终方案",
         zorder=4,
     )
     ax.set_xlabel("覆盖率")
     ax.set_ylabel("覆盖人口加权满意度")
-    ax.set_title("可行方案覆盖率-满意度散点", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(color="#E5E7EB", linewidth=0.9)
+    ax.set_title("可行方案覆盖率-满意度散点")
+    apply_axis_style(ax, grid="both")
     ax.legend(frameon=False, loc="lower right")
     cbar = fig.colorbar(sc, ax=ax)
     cbar.set_label("建设成本（万元）")
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q2_feasible_solution_scatter.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q2_feasible_solution_scatter.png")
     plt.close(fig)
 
 

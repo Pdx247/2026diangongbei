@@ -6,10 +6,12 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
 import zipfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+sys.dont_write_bytecode = True
 MPL_CACHE_BOOTSTRAP = Path.cwd() / "问题1" / ".matplotlib-cache"
 MPL_CACHE_BOOTSTRAP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_BOOTSTRAP))
@@ -20,7 +22,6 @@ matplotlib.use("Agg")
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import pandas as pd
 
@@ -32,6 +33,21 @@ IMG_DIR = Q1_DIR / "img"
 DOC_DIR = Q1_DIR / "docs"
 TABLE_DIR = DOC_DIR / "tables"
 DATA_DIR = ROOT / "2026年电工杯竞赛赛题" / "2026年电工杯竞赛赛题" / "B题"
+COMMON_DIR = ROOT / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from plot_style import (  # noqa: E402
+    COLORS,
+    FIGSIZE_COMPACT,
+    FIGSIZE_TALL,
+    FIGSIZE_WIDE,
+    TYPE_PALETTE,
+    apply_axis_style,
+    configure_matplotlib,
+    make_colormap,
+    save_figure,
+)
 
 ATTACHMENT_1 = DATA_DIR / "附件1：小区基础数据.xlsx"
 ATTACHMENT_2 = DATA_DIR / "附件2：服务需求数据.xlsx"
@@ -403,26 +419,7 @@ def build_demand_tables(
 
 
 def choose_font() -> None:
-    preferred = [
-        "PingFang SC",
-        "Heiti SC",
-        "Songti SC",
-        "STHeiti",
-        "Arial Unicode MS",
-        "Noto Sans CJK SC",
-        "Microsoft YaHei",
-        "SimHei",
-    ]
-    for font in preferred:
-        try:
-            fm.findfont(font, fallback_to_default=False)
-            plt.rcParams["font.sans-serif"] = [font]
-            break
-        except ValueError:
-            continue
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.facecolor"] = "white"
-    plt.rcParams["axes.facecolor"] = "white"
+    configure_matplotlib(plt, fm)
 
 
 def plot_outputs(
@@ -433,11 +430,7 @@ def plot_outputs(
 ) -> None:
     choose_font()
     IMG_DIR.mkdir(parents=True, exist_ok=True)
-    palette = {
-        "自理": "#4C78A8",
-        "半失能": "#F58518",
-        "失能": "#E45756",
-    }
+    palette = TYPE_PALETTE
 
     totals_by_year = forecast.groupby("年份")[TYPE_LABELS + ["老人总数"]].sum().reset_index()
     years = totals_by_year["年份"].to_numpy()
@@ -446,19 +439,19 @@ def plot_outputs(
     fig, (ax_total, ax_share) = plt.subplots(
         2,
         1,
-        figsize=(9.2, 6.2),
+        figsize=FIGSIZE_TALL,
         sharex=True,
         gridspec_kw={"height_ratios": [1.45, 1.0], "hspace": 0.26},
     )
     ax_total.plot(
         years,
         totals_by_year["老人总数"],
-        color="#172033",
+        color=COLORS["ink"],
         linewidth=2.4,
         marker="o",
         markersize=5.8,
     )
-    ax_total.fill_between(years, totals_by_year["老人总数"], color="#4C78A8", alpha=0.13)
+    ax_total.fill_between(years, totals_by_year["老人总数"], color=COLORS["blue"], alpha=0.12)
     for year, total in zip(years, totals_by_year["老人总数"]):
         ax_total.annotate(
             f"{int(total)}",
@@ -467,16 +460,15 @@ def plot_outputs(
             textcoords="offset points",
             ha="center",
             fontsize=8.5,
-            color="#374151",
+            color=COLORS["muted"],
         )
     y_min = totals_by_year["老人总数"].min() - 180
     y_max = totals_by_year["老人总数"].max() + 220
     ax_total.set_ylim(y_min, y_max)
     ax_total.set_ylabel("老人总数")
-    ax_total.set_title("未来五年老人总量与类型占比预测", fontsize=15, fontweight="bold", pad=12)
-    ax_total.grid(axis="y", color="#E5E7EB", linewidth=0.9)
+    ax_total.set_title("未来五年老人总量与类型占比预测")
+    apply_axis_style(ax_total, grid="y")
     ax_total.tick_params(axis="x", labelbottom=False)
-    ax_total.spines[["top", "right"]].set_visible(False)
 
     for elder_type in TYPE_LABELS:
         ax_share.plot(
@@ -502,15 +494,14 @@ def plot_outputs(
     ax_share.set_xticks(years)
     ax_share.set_xlabel("年份")
     ax_share.set_ylabel("占比（%）")
-    ax_share.grid(axis="y", color="#E5E7EB", linewidth=0.9)
-    ax_share.spines[["top", "right"]].set_visible(False)
+    apply_axis_style(ax_share, grid="y")
     fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.92)
-    fig.savefig(IMG_DIR / "q1_elderly_structure_trend.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_elderly_structure_trend.png")
     plt.close(fig)
 
     year5 = forecast[forecast["年份"] == 5].copy()
     year5 = year5.sort_values("老人总数", ascending=True)
-    fig, ax = plt.subplots(figsize=(9.2, 5.8))
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     left = np.zeros(len(year5))
     y_pos = np.arange(len(year5))
     for elder_type in TYPE_LABELS:
@@ -521,38 +512,36 @@ def plot_outputs(
     ax.set_yticklabels(year5["小区"])
     ax.set_xlabel("第5年末老人数量")
     ax.set_ylabel("小区")
-    ax.set_title("第5年末各小区老人类型结构", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="x", color="#D1D5DB", linewidth=0.8, alpha=0.7)
+    ax.set_title("第5年末各小区老人类型结构")
+    apply_axis_style(ax, grid="x")
     ax.legend(ncol=3, loc="lower right", frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q1_year5_community_structure.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_year5_community_structure.png")
     plt.close(fig)
 
     theoretical_total = theoretical_by_type.set_index("服务项目")["合计"].reindex(SERVICE_ORDER)
     constrained_total = constrained_by_type.set_index("服务项目")["合计"].reindex(SERVICE_ORDER)
     x = np.arange(len(SERVICE_ORDER))
     width = 0.38
-    fig, ax = plt.subplots(figsize=(9.2, 5.6))
-    ax.bar(x - width / 2, theoretical_total, width=width, color="#4C78A8", label="理论需求")
-    ax.bar(x + width / 2, constrained_total, width=width, color="#54A24B", label="消费约束后需求")
+    fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
+    ax.bar(x - width / 2, theoretical_total, width=width, color=COLORS["blue"], label="理论需求")
+    ax.bar(x + width / 2, constrained_total, width=width, color=COLORS["green"], label="消费约束后需求")
     ax.set_xticks(x)
     ax.set_xticklabels(SERVICE_ORDER, rotation=20, ha="right")
     ax.set_ylabel("月需求总次数")
-    ax.set_title("第5年末各服务月需求：理论值与消费约束后对比", fontsize=15, fontweight="bold", pad=12)
-    ax.grid(axis="y", color="#D1D5DB", linewidth=0.8, alpha=0.7)
+    ax.set_title("第5年末各服务月需求：理论值与消费约束后对比")
+    apply_axis_style(ax, grid="y")
     ax.legend(frameon=False)
-    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(IMG_DIR / "q1_service_demand_comparison.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_service_demand_comparison.png")
     plt.close(fig)
 
     heat = scaling.pivot(index="小区", columns="老人类型", values="削减系数").reindex(columns=TYPE_LABELS)
-    cmap = LinearSegmentedColormap.from_list(
+    cmap = make_colormap(
         "constraint_scale",
-        ["#B91C1C", "#F59E0B", "#FDE68A", "#3F8F5F"],
+        [COLORS["red"], "#D99755", "#F0D58B", "#9CCB8F", "#3F8F6A"],
     )
-    fig, ax = plt.subplots(figsize=(6.6, 5.8))
+    fig, ax = plt.subplots(figsize=FIGSIZE_COMPACT)
     values = heat.to_numpy()
     mesh = ax.pcolormesh(
         np.arange(values.shape[1] + 1),
@@ -574,9 +563,9 @@ def plot_outputs(
     for i in range(values.shape[0]):
         for j in range(values.shape[1]):
             val = values[i, j]
-            color = "white" if val < 0.78 else "#111827"
+            color = "white" if val < 0.78 else COLORS["ink"]
             ax.text(j + 0.5, i + 0.5, f"{val:.0%}", ha="center", va="center", color=color, fontsize=9.5)
-    ax.set_title("消费约束削减系数", fontsize=14, fontweight="bold", pad=18)
+    ax.set_title("消费约束削减系数", pad=18)
     fig.text(
         0.10,
         0.03,
@@ -584,7 +573,7 @@ def plot_outputs(
         ha="left",
         va="center",
         fontsize=8.6,
-        color="#4B5563",
+        color=COLORS["muted"],
     )
     cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.03, shrink=0.82)
     cbar.set_label("保留比例")
@@ -592,7 +581,7 @@ def plot_outputs(
     cbar.set_ticklabels(["65%", "75%", "85%", "95%", "100%"])
     ax.spines[:].set_visible(False)
     fig.subplots_adjust(top=0.86, bottom=0.10, left=0.12, right=0.88)
-    fig.savefig(IMG_DIR / "q1_consumption_scaling_heatmap.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, IMG_DIR / "q1_consumption_scaling_heatmap.png")
     plt.close(fig)
 
 
